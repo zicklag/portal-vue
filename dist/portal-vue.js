@@ -200,6 +200,57 @@ var Wormhole = function () {
 }();
 var wormhole = new Wormhole(transports);
 
+var nestRE = /^(attrs|props|on|nativeOn|class|style|hook)$/;
+
+var babelHelperVueJsxMergeProps = function mergeJSXProps (objs) {
+  return objs.reduce(function (a, b) {
+    var aa, bb, key, nestedKey, temp;
+    for (key in b) {
+      aa = a[key];
+      bb = b[key];
+      if (aa && nestRE.test(key)) {
+        // normalize class
+        if (key === 'class') {
+          if (typeof aa === 'string') {
+            temp = aa;
+            a[key] = aa = {};
+            aa[temp] = true;
+          }
+          if (typeof bb === 'string') {
+            temp = bb;
+            b[key] = bb = {};
+            bb[temp] = true;
+          }
+        }
+        if (key === 'on' || key === 'nativeOn' || key === 'hook') {
+          // merge functions
+          for (nestedKey in bb) {
+            aa[nestedKey] = mergeFn(aa[nestedKey], bb[nestedKey]);
+          }
+        } else if (Array.isArray(aa)) {
+          a[key] = aa.concat(bb);
+        } else if (Array.isArray(bb)) {
+          a[key] = [aa].concat(bb);
+        } else {
+          for (nestedKey in bb) {
+            aa[nestedKey] = bb[nestedKey];
+          }
+        }
+      } else {
+        a[key] = b[key];
+      }
+    }
+    return a
+  }, {})
+};
+
+function mergeFn (a, b) {
+  return function () {
+    a.apply(this, arguments);
+    b.apply(this, arguments);
+  }
+}
+
 var Target = {
   abstract: true,
   name: 'portalTarget',
@@ -208,15 +259,20 @@ var Target = {
     name: { type: String, required: true },
     slim: { type: Boolean, default: false },
     tag: { type: String, default: 'div' },
-    transition: { type: Object },
-    transitionEvents: { type: Object }
+    transition: { type: [Boolean, String, Object], default: false },
+    transitionEvents: { type: Object, default: function _default() {
+        return {};
+      } }
   },
   data: function data() {
     return {
       transports: transports,
-      firstRender: true };
+      firstRender: true
+    };
   },
   mounted: function mounted() {
+    var _this = this;
+
     if (!this.transports[this.name]) {
       this.$set(this.transports, this.name, undefined);
     }
@@ -226,8 +282,11 @@ var Target = {
     }, this.emitChange);
 
     this.updateAttributes();
-
-    this.firstRender = false;
+    this.$nextTick(function () {
+      if (_this.transition) {
+        _this.firstRender = false;
+      }
+    });
   },
   updated: function updated() {
     this.updateAttributes();
@@ -269,34 +328,53 @@ var Target = {
     children: function children() {
       return this.passengers.length !== 0 ? this.passengers : this.$slots.default || [];
     },
-    renderSlim: function renderSlim() {
-      var children = this.children;
-      return children.length === 1 && !this.attributes && this.slim;
+    noWrapper: function noWrapper() {
+      var noWrapper = !this.attributes && this.slim;
+      if (noWrapper && this.children.length > 1) {
+        console.warn('[portal-vue]: PortalTarget with `slim` option received more than one child element.');
+      }
+      return noWrapper;
     },
     withTransition: function withTransition() {
-      return this.transition && (!this.firstRender || this.transition.appear);
+      return !!this.transition;
+    },
+    transitionData: function transitionData() {
+      var t = this.transition;
+      var data = {};
+
+      if (this.firstRender && _typeof(this.transition) === 'object' && !this.transition.appear) {
+        data.props = { name: '__notranstition__portal-vue__' };
+        return data;
+      }
+
+      if (typeof t === 'string') {
+        data.props = { name: t };
+      } else if ((typeof t === 'undefined' ? 'undefined' : _typeof(t)) === 'object') {
+        data.props = t;
+      }
+      if (this.renderSlim) {
+        data.props.tag = this.tag;
+      }
+      data.on = this.transitionEvents;
+
+      return data;
     }
   },
 
   render: function render(h) {
-    var children = this.children;
+    var TransitionType = this.noWrapper ? 'transition' : 'transition-group';
     var Tag = this.tag;
-    if (this.renderSlim) {
-      return this.withTransition ? h('transition', {
-        props: this.transition,
-        on: this.transitionEvents || {}
-      }, children) : children[0];
-    } else {
-      var preparedChildren = this.withTransition ? h('transition', {
-        props: this.transition,
-        on: this.transitionEvents || {}
-      }, children) : children;
-      return h(
-        Tag,
-        { 'class': 'vue-portal-target' },
-        [preparedChildren]
-      );
-    }
+    var result = this.withTransition ? h(
+      TransitionType,
+      babelHelperVueJsxMergeProps([this.transitionData, { 'class': 'vue-portal-target' }]),
+      [this.children]
+    ) : this.noWrapper ? this.children[0] : h(
+      Tag,
+      { 'class': 'vue-portal-target' },
+      [this.children]
+    );
+
+    return result;
   }
 };
 
@@ -362,6 +440,8 @@ var Portal = {
             to: this.to,
             passengers: [].concat(toConsumableArray(this.$slots.default))
           });
+        } else {
+          this.clear();
         }
       } else if (!this.to && !this.targetEl) {
         console.warn('[vue-portal]: You have to define a target via the `to` prop.');
