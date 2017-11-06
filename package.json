@@ -1,5 +1,5 @@
 {
-  "name": "portal-vue",
+  "name": "@zicklag/portal-vue",
   "version": "1.2.1",
   "description": "A Vue component to render elements outside of a component's template, elsewhere in the DOM",
   "main": "dist/portal-vue.js",
